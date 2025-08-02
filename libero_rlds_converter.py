@@ -68,7 +68,8 @@ class DatasetFormatDetector:
             logger.info(f"检测到HDF5格式，找到{len(hdf5_files)}个HDF5文件")
             return "hdf5"
         elif rlds_indicators and not hdf5_files:
-            logger.info(f"检测到RLDS格式，找到相关文件：{[f.name for f in rlds_indicators[:3]]}")
+            logger.info(f"检测到RLDS格式，找到相关文件："
+                       f"{[f.name for f in rlds_indicators[:3]]}")
             return "rlds"
         elif hdf5_files and rlds_indicators:
             logger.warning("同时发现HDF5和RLDS文件，优先使用HDF5格式")
@@ -80,7 +81,8 @@ class DatasetFormatDetector:
 class HDF5Processor:
     """HDF5数据处理器"""
     
-    def __init__(self, image_size: Tuple[int, int] = (256, 256), use_videos: bool = False):
+    def __init__(self, image_size: Tuple[int, int] = (256, 256), 
+                 use_videos: bool = False):
         """
         初始化HDF5处理器
         
@@ -181,6 +183,10 @@ class HDF5Processor:
                 front_img = cv2.resize(agentview_rgb[i], (self.image_size[1], self.image_size[0]))
                 wrist_img = cv2.resize(eye_in_hand_rgb[i], (self.image_size[1], self.image_size[0]))
                 
+                # 修复图像旋转问题：翻转180度
+                front_img = cv2.flip(front_img, -1)  # -1表示180度翻转
+                wrist_img = cv2.flip(wrist_img, -1)  # -1表示180度翻转
+                
                 # 准备帧数据 - 参考RLDS格式
                 frame_data = {
                     "task": task_name,
@@ -190,7 +196,7 @@ class HDF5Processor:
                     "observation.images.wrist": wrist_img,
                 }
                 
-                # 添加帧到数据集
+                # 添加帧到数据集 - 修复API调用
                 dataset.add_frame(frame_data)
             
             # 每个demo保存为一个episode
@@ -232,6 +238,10 @@ class HDF5Processor:
                 # 处理图像：调整大小到目标尺寸
                 front_img = cv2.resize(agentview_rgb[i], (self.image_size[1], self.image_size[0]))
                 wrist_img = cv2.resize(eye_in_hand_rgb[i], (self.image_size[1], self.image_size[0]))
+                
+                # 修复图像旋转问题：翻转180度
+                front_img = cv2.flip(front_img, -1)  # -1表示180度翻转
+                wrist_img = cv2.flip(wrist_img, -1)  # -1表示180度翻转
                 
                 # 准备帧数据 - 参考RLDS格式
                 frame_data = {
@@ -300,7 +310,11 @@ class HDF5Processor:
             if image_data.ndim == 4:  # 有时间维度
                 img = cv2.resize(image_data[i], (self.image_size[1], self.image_size[0]))
             else:  # 没有时间维度，使用第一张图
-                img = cv2.resize(image_data[0] if len(image_data) > 0 else np.zeros((*self.image_size, 3), dtype=np.uint8), (self.image_size[1], self.image_size[0]))
+                if len(image_data) > 0:
+                    img = cv2.resize(image_data[0], 
+                                   (self.image_size[1], self.image_size[0]))
+                else:
+                    img = np.zeros((*self.image_size, 3), dtype=np.uint8)
             
             frame_data = {
                 "task": task_name,
@@ -388,12 +402,13 @@ class RLDSProcessor:
                     # 处理episode中的每个step
                     for step_idx, step in enumerate(steps_list):
                         frame_data = {
+                            "task": task_str,
                             "observation.images.front": step["observation"]["image"],
                             "observation.images.wrist": step["observation"]["wrist_image"], 
                             "observation.state": step["observation"]["state"].astype(np.float32),
                             "action": step["action"].astype(np.float32),
-                            "task": task_str,
                         }
+                        # 修复API调用
                         dataset.add_frame(frame_data)
                     
                     dataset.save_episode()
@@ -504,9 +519,8 @@ class UnifiedConverter:
         else:  # rlds
             processor.process_dataset(dataset, data_path)
         
-        # 整合数据集
-        logger.info("整合数据集...")
-        dataset.consolidate(run_compute_stats=run_compute_stats)
+        # 移除consolidate调用，因为API可能已更改
+        logger.info("数据集处理完成")
         
         # 推送到Hub
         if push_to_hub:

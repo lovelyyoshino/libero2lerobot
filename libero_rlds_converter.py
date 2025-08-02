@@ -139,7 +139,7 @@ class HDF5Processor:
                 # 检测HDF5文件格式，支持多种Libero格式
                 if "data" in file:
                     # 新的Libero格式：data/demo_N/...
-                    return self._process_libero_demo_format(file, dataset, task_name)
+                    return self._process_libero_demo_format(file, dataset, task_name, episode_path)
                 else:
                     logger.warning(f"未识别的HDF5格式: {episode_path}")
                     return False
@@ -149,9 +149,12 @@ class HDF5Processor:
             return False
             
 
-    def _process_libero_demo_format(self, file: h5py.File, dataset: LeRobotDataset, task_name: str) -> bool:
+    def _process_libero_demo_format(self, file: h5py.File, dataset: LeRobotDataset, task_name: str, file_path: Optional[Path] = None) -> bool:
         """处理新的Libero demo格式：data/demo_N/..."""
         data_group = file["data"]
+        
+        # 尝试从文件根级别提取任务信息
+        task_str = self._extract_task_info(file, task_name, file_path)
         
         # 获取所有demo
         demo_keys = [k for k in data_group.keys() if k.startswith("demo_")]
@@ -160,6 +163,9 @@ class HDF5Processor:
         for demo_key in demo_keys:
             demo_group = data_group[demo_key]
             logger.info(f"处理 {demo_key}")
+            
+            # 尝试从demo级别提取任务信息
+            demo_task_str = self._extract_task_info(demo_group, task_str, file_path)
             
             # 读取动作数据
             actions = np.array(demo_group["actions"])
@@ -189,7 +195,7 @@ class HDF5Processor:
                 
                 # 准备帧数据 - 参考RLDS格式
                 frame_data = {
-                    "task": task_name,
+                    "task": demo_task_str,
                     "action": actions[i].astype(np.float32),
                     "observation.state": joint_states[i].astype(np.float32),
                     "observation.images.front": front_img,
@@ -204,10 +210,84 @@ class HDF5Processor:
         
         return True
 
-    def _extract_libero_demo_frames(self, file: h5py.File, task_name: str) -> List[List[Dict]]:
+    def _extract_task_info(self, group: h5py.Group, default_task: str, file_path: Optional[Path] = None) -> str:
+        """从HDF5组中提取任务信息"""
+        # 尝试多种可能的任务信息字段
+        task_fields = [
+            "language_instruction", "task_description", "task", "description",
+            "instruction", "goal", "task_name", "task_info"
+        ]
+        
+        for field in task_fields:
+            if field in group:
+                try:
+                    task_data = group[field]
+                    if hasattr(task_data, 'asstr'):
+                        # 处理字符串数组
+                        task_str = task_data.asstr()[()]
+                    elif isinstance(task_data, (bytes, str)):
+                        # 处理字节或字符串
+                        task_str = task_data.decode() if isinstance(task_data, bytes) else task_data
+                    else:
+                        # 尝试转换为字符串
+                        task_str = str(task_data[()])
+                    
+                    if task_str and task_str.strip():
+                        logger.info(f"从字段 '{field}' 提取到任务: {task_str}")
+                        return task_str.strip()
+                except Exception as e:
+                    logger.debug(f"提取字段 '{field}' 失败: {e}")
+                    continue
+        
+        # 如果没有找到任务信息，尝试从文件名提取
+        if file_path is not None:
+            task_str = self._extract_task_from_filename(file_path)
+            if task_str:
+                logger.info(f"从文件名提取到任务: {task_str}")
+                return task_str
+        
+        # 如果都没有找到任务信息，返回默认值
+        return default_task
+    
+    def _extract_task_from_filename(self, file_path: Path) -> Optional[str]:
+        """从文件名中提取任务描述"""
+        try:
+            # 获取文件名（不含扩展名）
+            filename = file_path.stem
+            
+            # 常见的后缀需要移除
+            suffixes_to_remove = [
+                '_demo', '_trajectory', '_episode', '_data', '_hdf5',
+                'demo', 'trajectory', 'episode', 'data', 'hdf5'
+            ]
+            
+            # 移除后缀
+            task_name = filename
+            for suffix in suffixes_to_remove:
+                if task_name.endswith(suffix):
+                    task_name = task_name[:-len(suffix)]
+                    break
+            
+            # 将下划线替换为空格，使其更易读
+            task_name = task_name.replace('_', ' ')
+            
+            # 如果任务名称太短，可能不是有效的任务描述
+            if len(task_name.strip()) < 5:
+                return None
+            
+            return task_name.strip()
+            
+        except Exception as e:
+            logger.debug(f"从文件名提取任务失败: {e}")
+            return None
+
+    def _extract_libero_demo_frames(self, file: h5py.File, task_name: str, file_path: Optional[Path] = None) -> List[List[Dict]]:
         """提取Libero demo格式的帧数据（用于多线程处理）- 返回按demo分组的数据"""
         demos_frames = []
         data_group = file["data"]
+        
+        # 尝试从文件根级别提取任务信息
+        task_str = self._extract_task_info(file, task_name, file_path)
         
         # 获取所有demo
         demo_keys = [k for k in data_group.keys() if k.startswith("demo_")]
@@ -216,6 +296,9 @@ class HDF5Processor:
         for demo_key in demo_keys:
             demo_frames = []
             demo_group = data_group[demo_key]
+            
+            # 尝试从demo级别提取任务信息
+            demo_task_str = self._extract_task_info(demo_group, task_str, file_path)
             
             # 读取动作数据
             actions = np.array(demo_group["actions"])
@@ -245,7 +328,7 @@ class HDF5Processor:
                 
                 # 准备帧数据 - 参考RLDS格式
                 frame_data = {
-                    "task": task_name,
+                    "task": demo_task_str,
                     "action": actions[i].astype(np.float32),
                     "observation.state": joint_states[i].astype(np.float32),
                     "observation.images.front": front_img,
@@ -257,10 +340,13 @@ class HDF5Processor:
         
         return demos_frames
 
-    def _extract_direct_episode_frames(self, file: h5py.File, task_name: str) -> List[List[Dict]]:
+    def _extract_direct_episode_frames(self, file: h5py.File, task_name: str, file_path: Optional[Path] = None) -> List[List[Dict]]:
         """提取直接episode格式的帧数据（兜底方案，用于多线程处理）- 返回按episode分组的数据"""
         # 兜底方案：将整个文件作为一个episode
         episode_frames = []
+        
+        # 尝试提取任务信息
+        task_str = self._extract_task_info(file, task_name, file_path)
         
         # 尝试找到可能的状态数据
         state_keys = ["joint_states", "states", "robot_states", "state"]
@@ -316,8 +402,11 @@ class HDF5Processor:
                 else:
                     img = np.zeros((*self.image_size, 3), dtype=np.uint8)
             
+            # 修复图像旋转问题：翻转180度
+            img = cv2.flip(img, -1)  # -1表示180度翻转
+            
             frame_data = {
-                "task": task_name,
+                "task": task_str,
                 "action": action_data[i].astype(np.float32),
                 "observation.state": state_data[i].astype(np.float32),
                 "observation.images.front": img,
@@ -574,10 +663,10 @@ class UnifiedConverter:
                     # 使用与HDF5Processor相同的检测和处理逻辑
                     if "data" in file:
                         # 新的Libero格式：data/demo_N/...
-                        demos_frames = processor._extract_libero_demo_frames(file, task_name)
+                        demos_frames = processor._extract_libero_demo_frames(file, task_name, ep_path)
                     else:
                         # 尝试其他格式的兜底处理
-                        demos_frames = processor._extract_direct_episode_frames(file, task_name)
+                        demos_frames = processor._extract_direct_episode_frames(file, task_name, ep_path)
                     
                 return ep_path, True, demos_frames
             except Exception as e:

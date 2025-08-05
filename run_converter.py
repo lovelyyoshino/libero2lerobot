@@ -19,25 +19,25 @@ def create_argument_parser():
         epilog="""
 示例用法:
   # 自动检测格式并转换
-  python run_converter.py \\
-    --data-dir /path/to/data \\
-    --repo-id username/dataset_name \\
-    --push-to-hub \\
-    --use-videos \\
+  python run_converter.py \
+    --data-dir /path/to/data \
+    --repo-id username/dataset_name \
+    --push-to-hub \
+    --use-videos \
     --num-workers 4
 
   # HDF5格式，指定配置和任务名称
-  python run_converter.py \\
-    --data-dir /path/to/hdf5/data \\
-    --repo-id username/hdf5_dataset \\
-    --config config.json \\
-    --task-name "pick_and_place" \\
+  python run_converter.py \
+    --data-dir /path/to/hdf5/data \
+    --repo-id username/hdf5_dataset \
+    --config config.json \
+    --task-name "pick_and_place" \
     --num-workers 8
 
   # RLDS格式（传统用法）
-  python run_converter.py \\
-    --data-dir /path/to/rlds/data \\
-    --repo-id username/libero_dataset \\
+  python run_converter.py \
+    --data-dir /path/to/rlds/data \
+    --repo-id username/libero_dataset \
     --use-videos
 
 支持的数据集: 

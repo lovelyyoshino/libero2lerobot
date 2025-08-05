@@ -30,8 +30,13 @@ except ImportError:
     HAS_TF = False
     logging.warning("tensorflow_datasets未安装，RLDS支持将被禁用")
 
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.common.constants import HF_LEROBOT_HOME
+try:
+    from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+    from lerobot.common.constants import HF_LEROBOT_HOME
+except ImportError:
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from lerobot.constants import HF_LEROBOT_HOME
+
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
@@ -110,8 +115,8 @@ class HDF5Processor:
             },
             "observation.state": {
                 "dtype": "float32",
-                "shape": (7,),
-                "names": [f"state_{i}" for i in range(7)],
+                "shape": (8,),
+                "names": [f"state_{i}" for i in range(8)],
             },
             "action": {
                 "dtype": "float32",
@@ -176,6 +181,12 @@ class HDF5Processor:
             # 读取关节状态 - 作为observation.state
             joint_states = np.array(obs_group["joint_states"])
             
+            # 将7维状态扩展为8维以匹配RLDS格式
+            if joint_states.shape[-1] == 7:
+                # 添加一个额外的维度（例如夹爪状态，设为0）
+                gripper_state = np.zeros((joint_states.shape[0], 1), dtype=joint_states.dtype)
+                joint_states = np.concatenate([joint_states, gripper_state], axis=-1)
+            
             # 读取图像数据
             agentview_rgb = np.array(obs_group["agentview_rgb"])  # 前视图像
             eye_in_hand_rgb = np.array(obs_group["eye_in_hand_rgb"])  # 腕部图像
@@ -195,7 +206,6 @@ class HDF5Processor:
                 
                 # 准备帧数据 - 参考RLDS格式
                 frame_data = {
-                    "task": demo_task_str,
                     "action": actions[i].astype(np.float32),
                     "observation.state": joint_states[i].astype(np.float32),
                     "observation.images.front": front_img,
@@ -203,7 +213,7 @@ class HDF5Processor:
                 }
                 
                 # 添加帧到数据集 - 修复API调用
-                dataset.add_frame(frame_data)
+                dataset.add_frame(frame_data, task=demo_task_str)
             
             # 每个demo保存为一个episode
             dataset.save_episode()
@@ -309,6 +319,12 @@ class HDF5Processor:
             # 读取关节状态 - 作为observation.state
             joint_states = np.array(obs_group["joint_states"])
             
+            # 将7维状态扩展为8维以匹配RLDS格式
+            if joint_states.shape[-1] == 7:
+                # 添加一个额外的维度（例如夹爪状态，设为0）
+                gripper_state = np.zeros((joint_states.shape[0], 1), dtype=joint_states.dtype)
+                joint_states = np.concatenate([joint_states, gripper_state], axis=-1)
+            
             # 读取图像数据
             agentview_rgb = np.array(obs_group["agentview_rgb"])  # 前视图像
             eye_in_hand_rgb = np.array(obs_group["eye_in_hand_rgb"])  # 腕部图像
@@ -328,11 +344,11 @@ class HDF5Processor:
                 
                 # 准备帧数据 - 参考RLDS格式
                 frame_data = {
-                    "task": demo_task_str,
                     "action": actions[i].astype(np.float32),
                     "observation.state": joint_states[i].astype(np.float32),
                     "observation.images.front": front_img,
                     "observation.images.wrist": wrist_img,
+                    "task": demo_task_str,  # 暂时保留在字典中
                 }
                 demo_frames.append(frame_data)
             
@@ -360,6 +376,13 @@ class HDF5Processor:
         
         if state_data is None:
             raise KeyError("未找到任何状态数据")
+        
+        # 将7维状态扩展为8维以匹配RLDS格式
+        if state_data.shape[-1] == 7:
+            # 添加一个额外的维度（例如夹爪状态，设为0）
+            gripper_state = np.zeros((state_data.shape[0], 1), dtype=state_data.dtype)
+            state_data = np.concatenate([state_data, gripper_state], axis=-1)
+            logger.info(f"状态数据从7维扩展为8维: {state_data.shape}")
         
         # 尝试找到动作数据
         action_keys = ["actions", "action"]
@@ -406,11 +429,11 @@ class HDF5Processor:
             img = cv2.flip(img, -1)  # -1表示180度翻转
             
             frame_data = {
-                "task": task_str,
                 "action": action_data[i].astype(np.float32),
                 "observation.state": state_data[i].astype(np.float32),
                 "observation.images.front": img,
                 "observation.images.wrist": img,  # 使用相同图像作为腕部视图
+                "task": task_str,  # 暂时保留在字典中
             }
             episode_frames.append(frame_data)
         
@@ -491,14 +514,13 @@ class RLDSProcessor:
                     # 处理episode中的每个step
                     for step_idx, step in enumerate(steps_list):
                         frame_data = {
-                            "task": task_str,
                             "observation.images.front": step["observation"]["image"],
                             "observation.images.wrist": step["observation"]["wrist_image"], 
                             "observation.state": step["observation"]["state"].astype(np.float32),
                             "action": step["action"].astype(np.float32),
                         }
                         # 修复API调用
-                        dataset.add_frame(frame_data)
+                        dataset.add_frame(frame_data, task=task_str)
                     
                     dataset.save_episode()
                     episode_idx += 1
@@ -606,7 +628,11 @@ class UnifiedConverter:
         if format_type == "hdf5":
             self._process_hdf5_data(processor, dataset, data_path, task_name)
         else:  # rlds
-            processor.process_dataset(dataset, data_path)
+            # 确保是RLDSProcessor实例
+            if isinstance(processor, RLDSProcessor):
+                processor.process_dataset(dataset, data_path)
+            else:
+                raise TypeError("RLDS格式需要RLDSProcessor实例")
         
         # 移除consolidate调用，因为API可能已更改
         logger.info("数据集处理完成")
@@ -687,7 +713,9 @@ class UnifiedConverter:
                     # 每个demo作为独立的episode保存
                     for demo_idx, demo_frames in enumerate(demos_frames_list):
                         for frame_data in demo_frames:
-                            dataset.add_frame(frame_data)
+                            # 提取task信息
+                            task_str = frame_data.pop("task", "default_task")
+                            dataset.add_frame(frame_data, task=task_str)
                         dataset.save_episode()
                         logger.info(f"保存episode: {ep_path.name}_demo_{demo_idx}")
     
